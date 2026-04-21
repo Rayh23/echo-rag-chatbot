@@ -1,0 +1,35 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.ipynb_checkpoints/
+
+# Secrets — never commit these
+.env
+.env.*
+*.env
+secrets.toml
+
+# Claude Code local settings (contains project-specific permissions)
+.claude/
+
+# Generated indexes and large binary files (rebuild with build_index.py)
+faiss_index/
+
+# User uploads (temp session files — may contain personal/confidential documents)
+uploads/
+
+# Conversation history (session data, potentially contains PII)
+conversations/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# VS Code
+.vscode/
+
+# JetBrains
+.idea/

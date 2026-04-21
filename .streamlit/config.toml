@@ -1,0 +1,5 @@
+[theme]
+primaryColor             = "#0EA5E9"   # Caribbean sky blue — buttons, active elements
+backgroundColor          = "#0D1B2A"   # deep navy base
+secondaryBackgroundColor = "#08121E"   # darker navy for sidebar fallback
+textColor                = "#E0F2FE"   # cool off-white
