@@ -1,6 +1,6 @@
 # Echo — Agent Tool Definitions
 
-Echo uses OpenAI function calling to give the agent access to structured tools alongside its RAG retrieval pipeline. These tools allow the agent to look up specific pages, search for topics, and handle date-dependent queries accurately.
+Echo uses OpenAI function calling to give the agent access to structured tools alongside its RAG retrieval pipeline. These tools allow the agent to look up specific pages, search for topics, resolve visa requirements by nationality, and handle date-dependent queries accurately.
 
 All tools are defined in `tools.py` and dispatched via `run_tool()`.
 
@@ -97,7 +97,76 @@ A match is returned only if the score exceeds 0.25.
 
 ---
 
-## Tool 3: `get_current_date`
+## Tool 3: `lookup_visa_requirement`
+
+**Purpose**
+Answers whether citizens of a given country need a visa to enter Barbados, and the maximum
+permitted stay. Parses `knowledge_base/visa_requirements.txt` (Ministry of Foreign Affairs
+table, revised May 09, 2025) into one record per country and matches exactly.
+
+**Why this is a tool and not retrieval**
+This is the tool that exists because of an observed failure. The MFA table lists ~150
+countries, and semantic chunking packs each exemption group into a single chunk — the
+Commonwealth chunk alone holds 23 country names. That chunk's embedding is a blur that
+matches no individual country strongly, so a question like *"I'm a Nigerian citizen, do I
+need a visa?"* retrieved four chunks of generic visa-application prose and none containing
+"Nigeria". The model saw how to apply for a visa, found nothing contradicting it, and told a
+visa-exempt Commonwealth citizen they needed a visa.
+
+A country-to-requirement mapping is a lookup table, not prose. Matching is exact, with
+demonym stems ("Nigerian" → "Nigeria") tried as exact matches only — deliberately no fuzzy
+matching, since **Niger** and **Nigeria** are one edit apart and are different countries with
+different requirements. An unrecognised country returns `found: false` with suggestions,
+which the system prompt requires the agent to report rather than guess around.
+
+**Inputs**
+
+| Parameter | Type   | Description                                          |
+|-----------|--------|------------------------------------------------------|
+| `country` | string | Country name, e.g. "Nigeria", "Jamaica", "Iran"      |
+
+**Output**
+```json
+{
+  "found": true,
+  "query": "Nigeria",
+  "matches": [
+    {
+      "country": "Nigeria",
+      "visa_required": false,
+      "max_stay": "up to 6 months",
+      "category": "Commonwealth Countries"
+    }
+  ],
+  "always_required": ["Valid passport", "Return or onward ticket", "..."],
+  "caveat": "Being visa-exempt does not guarantee entry — immigration officers may refuse entry...",
+  "source": "Barbados Ministry of Foreign Affairs visa table, revised May 09, 2025"
+}
+```
+
+`matches` is a list because one country can have several records. Haiti returns two — regular
+passport holders require a visa, while diplomatic and official passport holders are CARICOM
+visa-exempt — each carrying a `qualifier` field naming the condition.
+
+If the country is not listed:
+```json
+{
+  "found": false,
+  "query": "Niger",
+  "message": "'Niger' is not listed in the Ministry of Foreign Affairs visa table. Do not guess this nationality's visa status.",
+  "guidance": "Per the source document, citizens of countries not listed should contact the Barbados Ministry of Foreign Affairs...",
+  "did_you_mean": ["Nigeria"]
+}
+```
+
+**Example use cases**
+- "I'm a Nigerian citizen — do I need a visa?"
+- "How long can a Jamaican passport holder stay?"
+- "My friend travels on a Haitian diplomatic passport, does she need a visa?"
+
+---
+
+## Tool 4: `get_current_date`
 
 **Purpose**
 Returns today's date in multiple formats. Used to answer any question that depends on the current date, such as visa expiry calculations, how many days remain before a deadline, or whether a permit has lapsed.
@@ -134,6 +203,9 @@ User asks a question
        │
        ▼
  RAG retrieval (FAISS semantic search on pre-built index)
+       │
+       ▼
+ If query names a nationality → call lookup_visa_requirement(country)   [required]
        │
        ▼
  If query is topic-specific → call search_pages_metadata(query)

@@ -1,12 +1,13 @@
 import base64
 import io
 import math
+import re
 import streamlit as st
 from pathlib import Path
 from PIL import Image, ImageDraw
 
 from config import client, CHAT_MODEL
-from rag_utils import ingest_file, retrieve, load_prebuilt_index
+from rag_utils import ingest_file, retrieve, load_prebuilt_index, index_fingerprint
 from tools import TOOLS, run_tool
 from memory_utils import (
     trim_history,
@@ -20,6 +21,9 @@ UPLOADS_DIR.mkdir(exist_ok=True)
 
 BOT_AVATAR = Path("assets/immibot.png")
 
+# Maximum tool-calling rounds before the model is asked to answer without tools
+MAX_TOOL_TURNS = 5
+
 SYSTEM_PROMPT = (
     "You are Echo, an expert Barbados immigration assistant. "
     "Help users understand visa categories, entry requirements, "
@@ -30,16 +34,24 @@ SYSTEM_PROMPT = (
     "edge cases, then give a clear and practical answer. End by mentioning the source "
     "pages your answer draws from. Do all of this naturally in your response — never "
     "use section headings or labels like ASSESS, ANALYSE, REASON, RECOMMEND, or CITE.\n\n"
-    "You have access to three tools — use them proactively:\n"
+    "You have access to four tools — use them proactively:\n"
     "- search_pages_metadata: use first when a query maps to a specific topic to find the right page.\n"
     "- get_page_by_topic: use to fetch the FULL page when you need complete requirements — "
     "more reliable than RAG chunks for direct topic questions.\n"
+    "- lookup_visa_requirement: you MUST call this for ANY question mentioning a "
+    "nationality, citizenship, passport, or country of origin. Whether a country needs "
+    "a visa is a lookup, never an inference — retrieved context does not list every "
+    "country, so absence of a country from the context is NOT evidence it needs a visa. "
+    "If the tool returns found:false, say the nationality is not listed and refer the "
+    "user to the Ministry of Foreign Affairs.\n"
     "- get_current_date: use whenever the user asks anything date-dependent "
     "(expiry, deadlines, how long remaining).\n\n"
     "Rules:\n"
     "- Base answers strictly on provided context and tool results. If context does not cover "
     "the question, say so and direct the user to contact the Barbados Immigration Department.\n"
     "- Do not invent visa categories, fees, durations, or document requirements.\n"
+    "- Never state whether a nationality needs a visa without a lookup_visa_requirement "
+    "result backing it.\n"
     "- When quoting requirements, be precise.\n"
     "- This is informational guidance only — not legal advice. For complex cases, "
     "recommend consulting an immigration lawyer."
@@ -90,9 +102,22 @@ def sidebar_image() -> Image.Image:
 
 
 @st.cache_resource
+def _prebuilt_index_cached(fingerprint: tuple):
+    """Keyed on the index files' fingerprint, so a rebuild gets a fresh entry."""
+    return load_prebuilt_index()
+
+
 def get_prebuilt_index():
-    """Load prebuilt FAISS index once per process. Returns (chunks, index) or ([], None)."""
-    chunks, index = load_prebuilt_index()
+    """
+    Load the prebuilt FAISS index. Returns (chunks, index) or ([], None).
+
+    A missing index is never cached: building faiss_index/ while the app is
+    running is picked up on the next rerun, no process restart needed.
+    """
+    fingerprint = index_fingerprint()
+    if fingerprint is None:
+        return [], None
+    chunks, index = _prebuilt_index_cached(fingerprint)
     if chunks is None:
         return [], None
     return chunks, index
@@ -483,9 +508,56 @@ def build_messages(history: list[dict], user_query: str, context_chunks: list[di
         sep = "\n\n---\n\n"
         context_text = sep.join(parts)
         messages.append({"role": "system", "content": "Relevant immigration information:\n\n" + context_text})
-    messages += history
+    # History entries may carry extra local keys (e.g. "sources") — the API
+    # only accepts role/content, so rebuild each turn cleanly.
+    messages += [{"role": m["role"], "content": m["content"]} for m in history]
     messages.append({"role": "user", "content": user_query})
     return messages
+
+
+def md_safe(text: str) -> str:
+    """
+    Escape currency dollar signs before rendering.
+
+    Streamlit's markdown parses "$...$" as inline LaTeX, which mangles the
+    BDS$/US$ figures throughout the knowledge base ("BDS$300 (approximately
+    US$150)"). Only a $ directly before a digit is escaped, and fenced code
+    blocks are left alone.
+    """
+    parts = text.split("```")
+    for i in range(0, len(parts), 2):        # even indices are outside code fences
+        parts[i] = re.sub(r"\$(?=\d)", r"\\$", parts[i])
+    return "```".join(parts)
+
+
+def collect_sources(chunks: list[dict]) -> list[dict]:
+    """Reduce retrieved chunks to unique {title, url} citations, order preserved."""
+    seen, sources = set(), []
+    for c in chunks:
+        url = c.get("source_url", "")
+        if url and url not in seen:
+            seen.add(url)
+            sources.append({"title": c.get("page_title") or url, "url": url})
+    return sources
+
+
+def render_sources(sources: list[dict]) -> None:
+    """Render citation links beneath an assistant message."""
+    if not sources:
+        return
+    parts = []
+    for s in sources:
+        url, title = s["url"], s["title"]
+        parts.append(
+            f'<a href="{url}" target="_blank" style="color:rgba(220,180,190,0.85);'
+            f'font-size:0.72rem;text-decoration:none;">{title}</a>'
+        )
+    links = " &nbsp;·&nbsp; ".join(parts)
+    st.markdown(
+        f'<div style="padding-left:3.5rem;margin-top:-0.3rem;'
+        f'margin-bottom:0.75rem;">{links}</div>',
+        unsafe_allow_html=True,
+    )
 
 
 def get_reply(user_query: str) -> tuple[str, list[dict]]:
@@ -514,8 +586,9 @@ def get_reply(user_query: str) -> tuple[str, list[dict]]:
     messages = build_messages(st.session_state.history, user_query, unique)
     messages = trim_history(messages)
 
-    # Tool-calling loop — continues until the model returns a plain text response
-    while True:
+    # Tool-calling loop — bounded so a model that keeps requesting tools
+    # cannot spin indefinitely (each turn is a paid API call).
+    for _ in range(MAX_TOOL_TURNS):
         response = client.chat.completions.create(
             model=CHAT_MODEL,
             messages=messages,
@@ -528,7 +601,7 @@ def get_reply(user_query: str) -> tuple[str, list[dict]]:
 
         # No tool calls — final answer
         if not msg.tool_calls:
-            return msg.content, unique
+            return msg.content or "", unique
 
         # Append assistant turn (contains tool_calls)
         messages.append(msg)
@@ -541,6 +614,14 @@ def get_reply(user_query: str) -> tuple[str, list[dict]]:
                 "tool_call_id": tc.id,
                 "content": result,
             })
+
+    # Turn cap reached — force a final answer with tools withheld
+    final = client.chat.completions.create(
+        model=CHAT_MODEL,
+        messages=messages,
+        temperature=0.3,
+    )
+    return final.choices[0].message.content or "", unique
 
 
 # ── Sidebar ───────────────────────────────────────────────────────────────────
@@ -613,6 +694,13 @@ with st.sidebar:
                         st.session_state.ingested_file = None
                     st.rerun()
 
+    if st.session_state.base_index is None:
+        st.warning(
+            "Knowledge base not loaded — run `python build_index.py` to "
+            "generate `faiss_index/`. Echo will answer from tools only.",
+            icon="⚠️",
+        )
+
     st.divider()
     st.header("Documents")
     uploaded = st.file_uploader(
@@ -625,12 +713,18 @@ with st.sidebar:
         save_path = UPLOADS_DIR / uploaded.name
         save_path.write_bytes(uploaded.getbuffer())
         if st.session_state.ingested_file != uploaded.name:
-            with st.spinner(f"Ingesting {uploaded.name}..."):
-                chunk_dicts, index = ingest_file(str(save_path))
-                st.session_state.user_chunks = chunk_dicts
-                st.session_state.user_index = index
-                st.session_state.ingested_file = uploaded.name
-            st.toast(f"Ready — {len(chunk_dicts)} chunks indexed", icon="✅")
+            try:
+                with st.spinner(f"Ingesting {uploaded.name}..."):
+                    chunk_dicts, index = ingest_file(str(save_path))
+                    st.session_state.user_chunks = chunk_dicts
+                    st.session_state.user_index = index
+                    st.session_state.ingested_file = uploaded.name
+                st.toast(f"Ready — {len(chunk_dicts)} chunks indexed", icon="✅")
+            except ValueError as e:
+                # Unreadable or image-only files raise from ingest_file
+                st.error(f"Could not read {uploaded.name} — {e}")
+            except Exception as e:
+                st.error(f"Ingestion failed for {uploaded.name} — {e}")
         else:
             st.toast(f"{uploaded.name} already loaded", icon="📄")
 
@@ -696,38 +790,38 @@ if not st.session_state.history and not effective_prompt:
 for msg in st.session_state.history:
     avatar = echo_avatar() if msg["role"] == "assistant" else "user"
     with st.chat_message(msg["role"], avatar=avatar):
-        st.markdown(msg["content"])
+        st.markdown(md_safe(msg["content"]))
+    if msg["role"] == "assistant":
+        render_sources(msg.get("sources", []))
 
 # ── Process prompt ────────────────────────────────────────────────────────────
 if effective_prompt:
     with st.chat_message("user"):
-        st.markdown(effective_prompt)
+        st.markdown(md_safe(effective_prompt))
 
+    reply, source_chunks = None, []
     with st.chat_message("assistant", avatar=echo_avatar()):
         with st.spinner("Thinking..."):
-            reply, source_chunks = get_reply(effective_prompt)
-        st.markdown(reply)
+            try:
+                reply, source_chunks = get_reply(effective_prompt)
+            except Exception as e:
+                st.error(
+                    "Echo could not reach the language model. Check that "
+                    f"OPENAI_API_KEY is set and valid — {e}"
+                )
+        if reply:
+            st.markdown(md_safe(reply))
+        elif reply == "":
+            st.warning("Echo returned an empty response — try rephrasing your question.")
 
-    # Source citations — rendered below the assistant bubble
-    unique_sources = {}
-    for c in source_chunks:
-        url = c.get("source_url", "")
-        if url and url not in unique_sources:
-            unique_sources[url] = c["page_title"]
-    if unique_sources:
-        links = " &nbsp;·&nbsp; ".join(
-            f'<a href="{url}" target="_blank" style="'
-            'color:rgba(220,180,190,0.85);font-size:0.72rem;'
-            'text-decoration:none;">{title}</a>'
-            for url, title in unique_sources.items()
-        )
-        st.markdown(
-            f'<div style="padding-left:3.5rem;margin-top:-0.3rem;'
-            f'margin-bottom:0.75rem;">{links}</div>',
-            unsafe_allow_html=True,
-        )
+    # Sources are stored on the message so they survive the rerun below
+    if reply:
+        sources = collect_sources(source_chunks)
+        render_sources(sources)
 
-    st.session_state.history.append({"role": "user", "content": effective_prompt})
-    st.session_state.history.append({"role": "assistant", "content": reply})
-    save_conversation(st.session_state.conversation_id, st.session_state.history)
-    st.rerun()
+        st.session_state.history.append({"role": "user", "content": effective_prompt})
+        st.session_state.history.append(
+            {"role": "assistant", "content": reply, "sources": sources}
+        )
+        save_conversation(st.session_state.conversation_id, st.session_state.history)
+        st.rerun()

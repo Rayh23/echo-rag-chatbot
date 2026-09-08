@@ -132,7 +132,19 @@ def retrieve(query: str, index: faiss.IndexFlatL2, chunks: list, k: int = 4) -> 
     """
     query_vec = embed_chunks([query])
     _, indices = index.search(query_vec, k)
-    return [chunks[i] for i in indices[0] if i < len(chunks)]
+    # FAISS pads with -1 when the index holds fewer than k vectors
+    return [chunks[i] for i in indices[0] if 0 <= i < len(chunks)]
+
+
+def index_fingerprint(index_dir: str = "faiss_index") -> tuple | None:
+    """
+    (mtime, size) of the persisted index files, or None if they are not on disk.
+    Used as a cache key so a rebuilt index invalidates any in-memory copy.
+    """
+    paths = [Path(index_dir) / "index.faiss", Path(index_dir) / "chunks.json"]
+    if not all(p.exists() for p in paths):
+        return None
+    return tuple((p.stat().st_mtime_ns, p.stat().st_size) for p in paths)
 
 
 def load_prebuilt_index(index_dir: str = "faiss_index") -> tuple:

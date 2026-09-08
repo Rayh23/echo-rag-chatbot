@@ -1,8 +1,9 @@
 # CLAUDE.md — ai-chatbot-rag
 
 ## Project
-Barbados immigration RAG chatbot — "Echo". Assignment submitted 2026-04-08, now extended with agent tools and knowledge base for next deliverable.
+Barbados immigration RAG chatbot — "Echo". Started as a coursework project, since extended with agent tools and a scraped knowledge base; now maintained as a portfolio project.
 Streamlit UI, OpenAI Python SDK, FAISS vector store, OpenAI function calling, scraped immigration knowledge base.
+Runs locally, single-user by design — see "Scope and Limitations" in README.md.
 
 ## Stack
 - Python 3.14.3
@@ -20,7 +21,7 @@ Streamlit UI, OpenAI Python SDK, FAISS vector store, OpenAI function calling, sc
 - `app.py` — Streamlit entry point
 - `config.py` — OpenAI client singleton + shared model constants (CHAT_MODEL, EMBED_MODEL)
 - `rag_utils.py` — chunking, embedding, FAISS index, retrieval, ingest cache
-- `tools.py` — OpenAI function-calling tool definitions and dispatch (search_pages_metadata, get_page_by_topic, get_current_date)
+- `tools.py` — OpenAI function-calling tool definitions and dispatch (search_pages_metadata, get_page_by_topic, lookup_visa_requirement, get_current_date)
 - `scraper.py` — scrapes public Barbados immigration pages → knowledge_base/pages.json
 - `build_index.py` — embeds all knowledge base sources and builds FAISS index → faiss_index/
 - `file_utils.py` — file parsing dispatch (PDF, DOCX, TXT → str)
@@ -33,10 +34,12 @@ Streamlit UI, OpenAI Python SDK, FAISS vector store, OpenAI function calling, sc
 - `assets/immibot.png` — sidebar robot image (circularly cropped via PIL, 5% margin trim)
 - `.streamlit/config.toml` — Streamlit theme config (primaryColor #0EA5E9, background #0D1B2A)
 - `notebooks/development.ipynb` — prototyping scratch pad
-- `agent_tools.md` — agent tool documentation (assignment deliverable)
-- `business_context.md` — knowledge base and BI context documentation (assignment deliverable)
-- `design_explanation.md` — written deliverable: design process explanation
-- `challenges_and_learnings.md` — written deliverable: challenges and key learnings
+- `docs/agent_tools.md` — agent tool documentation
+- `docs/business_context.md` — knowledge base and BI context documentation
+- `docs/design_explanation.md` — design process explanation
+- `docs/challenges_and_learnings.md` — development retrospective
+- `LICENSE` — MIT
+- `.env.example` — API key template
 
 ## Design Principles
 - Minimize API calls: cache embeddings by file hash, skip re-embedding unchanged files
@@ -45,7 +48,11 @@ Streamlit UI, OpenAI Python SDK, FAISS vector store, OpenAI function calling, sc
 - Tool-calling loop: model may call tools zero or more times before final response; loop exits on non-tool response
 - Semantic chunking: paragraph-aware, tracks section headings, falls back to fixed-size for oversized paragraphs
 - Defensive ingestion: parse errors caught explicitly; empty-text files rejected before embedding
-- Keep code readable and explainable — written deliverables are part of the grade
+- Keep code readable and explainable — the written docs in docs/ are part of the deliverable
+- Bounded tool loop: MAX_TOOL_TURNS caps tool rounds, then forces a final answer with tools withheld
+- Lookups over retrieval: country visa status comes from a parse of visa_requirements.txt, not embedding search — a flat list of ~25 country names embeds as a blur and misses individual countries
+- Currency safety: assistant markdown passes through md_safe() so BDS$/US$ figures are not parsed as inline LaTeX by Streamlit
+- User-facing failures surface via st.error — no raw tracebacks in the UI
 
 ## Conventions
 - No LangChain — keep dependencies minimal and logic explicit
@@ -78,6 +85,6 @@ Streamlit UI, OpenAI Python SDK, FAISS vector store, OpenAI function calling, sc
 - Total: 132 FAISS chunks across 18 sources
 - Rebuild index: python scraper.py && python build_index.py
 
-## Remaining Deliverables
-- Commit to GitHub (repo created, not yet pushed)
-- Live demonstration
+## Housekeeping
+- Assistant history entries may carry a `sources` key; `build_messages` strips it before any API call
+- Repo is intended to be public — no secrets, no index/uploads/conversations committed
