@@ -2,7 +2,7 @@
 
 ## Overview
 
-Building Echo was a process of solving real problems as they came up — not just writing code, but understanding why certain approaches worked and others did not. This document reflects the main challenges encountered during development and what each one taught me.
+Building Echo was a process of solving real problems as they came up — not just writing code, but understanding why certain approaches worked and others did not. This document records the main challenges encountered during development and what each one taught me.
 
 ---
 
@@ -50,7 +50,7 @@ That was an important shift in understanding because it showed the difference be
 
 I also learned that temperature has a major effect on the kind of responses the model gives. A lower temperature produces more focused, consistent, and reliable answers, while a higher temperature tends to make responses more varied and creative.
 
-For this project, that mattered because I wanted Echo to sound clear, grounded, and useful rather than overly random. Understanding this helped me tune the chatbot’s behavior to better match the purpose of the assignment.
+For this project, that mattered because I wanted Echo to sound clear, grounded, and useful rather than overly random. Understanding this helped me tune the chatbot’s behaviour to match what the assistant is for — answering immigration questions precisely, not creatively.
 
 **Key learning:** The model’s personality is not fixed. Settings like temperature are important design choices that shape how the assistant behaves.
 
