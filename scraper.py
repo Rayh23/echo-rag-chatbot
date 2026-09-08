@@ -75,7 +75,7 @@ def _derive_title(soup, text: str) -> str:
 HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (compatible; EchoRAGBot/1.0; "
-        "+https://github.com/student-project; educational use)"
+        "educational use; contact via repository issues)"
     ),
     "Accept-Language": "en-US,en;q=0.9",
     "Accept": "text/html,application/xhtml+xml",
@@ -158,7 +158,6 @@ def scrape_all(seed_paths: list[str], delay: float = 1.5) -> list[dict]:
 
 def main():
     Path("knowledge_base").mkdir(exist_ok=True)
-    total = len(SEED_PATHS) + len(EXTRA_URLS)
     print(f"Scraping {len(SEED_PATHS)} pages from {BASE_URL} + {len(EXTRA_URLS)} extra URLs...\n")
     pages = scrape_all(SEED_PATHS)
 

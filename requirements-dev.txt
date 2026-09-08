@@ -1,0 +1,5 @@
+# Development-only dependencies (needed to run notebooks/development.ipynb).
+# Install alongside the main requirements:
+#   pip install -r requirements.txt -r requirements-dev.txt
+
+ipykernel>=6.29,<7
